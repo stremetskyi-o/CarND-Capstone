@@ -6,6 +6,7 @@ import numpy as np
 import rospy
 from geometry_msgs.msg import PoseStamped
 from scipy.spatial import KDTree
+from std_msgs.msg import Int32
 
 from styx_msgs.msg import Lane
 
@@ -33,9 +34,9 @@ class WaypointUpdater(object):
 
         rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
         rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
+        rospy.Subscriber('/traffic_waypoint', Int32, self.traffic_cb)
 
-        # TODO: Add a subscriber for /traffic_waypoint and /obstacle_waypoint below
-
+        # TODO: Add a subscriber for /obstacle_waypoint below
 
         self.final_waypoints_pub = rospy.Publisher('final_waypoints', Lane, queue_size=1)
 
@@ -43,6 +44,9 @@ class WaypointUpdater(object):
         self.base_wp_2d = None
         self.base_wp_tree = None
         self.current_pose = None
+        self.traffic_wp = -1
+        self.velocity = rospy.get_param('~velocity', 40 / 3.6)
+        self.braking_distance = 30
 
         self.loop()
 
@@ -70,6 +74,24 @@ class WaypointUpdater(object):
         lane.header = self.base_wp.header
         lane.waypoints = self.base_wp.waypoints[closest_idx:closest_idx + LOOKAHEAD_WPS]
         lane.waypoints = lane.waypoints + self.base_wp.waypoints[:LOOKAHEAD_WPS - len(lane.waypoints)]
+
+        wps_to_stop = self.traffic_wp - closest_idx
+        if self.traffic_wp != -1 and wps_to_stop < LOOKAHEAD_WPS:
+            dist = self.distance(lane.waypoints, 0, wps_to_stop)
+            if dist <= self.braking_distance:
+                if dist < 1:
+                    dist = 0
+                start_velocity = self.velocity * dist / self.braking_distance
+                for i, wp in zip(range(wps_to_stop), lane.waypoints):
+                    vel = start_velocity * (wps_to_stop - (i + 1.)) / wps_to_stop
+                    wp.twist.twist.linear.x = vel
+
+                self.final_waypoints_pub.publish(lane)
+                return
+
+        # Keep going with constant speed
+        for wp in lane.waypoints:
+            wp.twist.twist.linear.x = self.velocity
         self.final_waypoints_pub.publish(lane)
 
     def pose_cb(self, msg):
@@ -83,8 +105,7 @@ class WaypointUpdater(object):
             self.base_wp_tree = KDTree(self.base_wp_2d)
 
     def traffic_cb(self, msg):
-        # TODO: Callback for /traffic_waypoint message. Implement
-        pass
+        self.traffic_wp = msg.data
 
     def obstacle_cb(self, msg):
         # TODO: Callback for /obstacle_waypoint message. We will implement it later
