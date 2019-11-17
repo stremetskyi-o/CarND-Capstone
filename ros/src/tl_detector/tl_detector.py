@@ -8,6 +8,7 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 from light_classification.tl_classifier import TLClassifier
 from scipy.spatial import KDTree
+import scipy.misc
 import tf
 import cv2
 import yaml
@@ -43,13 +44,17 @@ class TLDetector(object):
         self.upcoming_red_light_pub = rospy.Publisher('/traffic_waypoint', Int32, queue_size=1)
 
         self.bridge = CvBridge()
-        self.light_classifier = TLClassifier()
+        self.light_classifier = TLClassifier(rospy.get_param('model_path'))
         self.listener = tf.TransformListener()
 
         self.state = TrafficLight.UNKNOWN
         self.last_state = TrafficLight.UNKNOWN
         self.last_wp = -1
         self.state_count = 0
+
+        self.record_train_data = False
+        self.train_data_dir = '/home/student/traffic_train'
+        self.record_distance = 100
 
         rospy.spin()
 
@@ -106,11 +111,12 @@ class TLDetector(object):
         """
         return self.waypoints_tree.query(pos)[1]
 
-    def get_light_state(self, light):
+    def get_light_state(self, light, wp_distance):
         """Determines the current color of the traffic light
 
         Args:
             light (TrafficLight): light to classify
+            wp_distance: Distance in waypoints
 
         Returns:
             int: ID of traffic light color (specified in styx_msgs/TrafficLight)
@@ -119,12 +125,17 @@ class TLDetector(object):
         if not self.has_image:
             self.last_wp = None
             return False
-        #
-        # cv_image = self.bridge.imgmsg_to_cv2(self.camera_image, "bgr8")
-        #
-        # #Get classification
-        # return self.light_classifier.get_classification(cv_image)
-        return light.state
+
+        cv_image = self.bridge.imgmsg_to_cv2(self.camera_image, "rgb8")
+        if self.record_train_data and wp_distance < self.record_distance:
+            fname = self.train_data_dir + '/img_%d_%d.png' % (self.camera_image.header.seq, light.state)
+            scipy.misc.imsave(fname, cv_image)
+            rospy.logwarn("Wrote train image " + fname)
+
+        # Get classification
+        return self.light_classifier.get_classification(cv_image)
+        # Use value from /vehicle/traffic_lights
+        # return light.state
 
     def process_traffic_lights(self):
         """Finds closest visible traffic light, if one exists, and determines its
@@ -137,6 +148,7 @@ class TLDetector(object):
         """
         stop_line_idx = None
         stop_line_wp = None
+        car_wp = None
 
         # List of positions that correspond to the line to stop in front of for a given intersection
         stop_line_positions = self.config['stop_line_positions']
@@ -152,7 +164,7 @@ class TLDetector(object):
                     stop_line_wp = test_stop_line_wp
 
         if None not in (stop_line_idx, stop_line_wp):
-            state = self.get_light_state(self.lights[stop_line_idx])
+            state = self.get_light_state(self.lights[stop_line_idx], stop_line_wp - car_wp)
             return stop_line_wp, state
         return -1, TrafficLight.UNKNOWN
 
